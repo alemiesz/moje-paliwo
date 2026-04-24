@@ -33,10 +33,10 @@ def load_data():
 df_fleet, df_inv, df_logs = load_data()
 
 # --- LOGIKA OBLICZEŃ ---
-total_purchased = df_inv['Litry'].sum() if not df_inv.empty else 0
-total_used = df_logs['Dolano'].sum() if not df_logs.empty else 0
-current_stock = max(0, total_purchased - total_used)
-avg_price = (df_inv['Kwota'].sum() / total_purchased) if total_purchased > 0 else 0
+total_purchased = round(df_inv['Litry'].sum(), 1) if not df_inv.empty else 0
+total_used = round(df_logs['Dolano'].sum(), 1) if not df_logs.empty else 0
+current_stock = round(max(0, total_purchased - total_used), 1)
+avg_price = round((df_inv['Kwota'].sum() / total_purchased), 2) if total_purchased > 0 else 0
 
 # --- MENU BOCZNE ---
 st.sidebar.title("⛽ FarmFuel PRO")
@@ -58,14 +58,14 @@ if menu == "🏠 Pulpit Operacyjny":
         st.subheader("Monitoring Ciągników")
         for _, t in df_fleet.iterrows():
             t_logs = df_logs[df_logs['ID'] == t['ID']]
-            last_mth = t_logs['MTH'].max() if not t_logs.empty else t['MTH_Start']
-            fuel_in_t = t_logs['Dolano'].sum() - t_logs['Spalone'].sum()
+            last_mth = round(t_logs['MTH'].max(), 1) if not t_logs.empty else round(t['MTH_Start'], 1)
+            fuel_in_t = round(t_logs['Dolano'].sum() - t_logs['Spalone'].sum(), 1)
             
             # Serwis
             mth_since_start = last_mth - t['MTH_Start']
-            to_service = t['Serwis_Co'] - (mth_since_start % t['Serwis_Co'])
+            to_service = round(t['Serwis_Co'] - (mth_since_start % t['Serwis_Co']), 1)
             
-            st.markdown(f'<div style="background: rgba(30, 41, 59, 0.4); padding: 15px; border-radius: 15px; border: 1px solid #334155; margin-bottom: 15px;"><span style="font-size: 18px; font-weight: bold;">{t["Nazwa"]}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background: rgba(30, 41, 59, 0.4); padding: 15px; border-radius: 10px; border: 1px solid #334155; margin-bottom: 15px;"><span style="font-size: 18px; font-weight: bold;">{t["Nazwa"]}</span></div>', unsafe_allow_html=True)
             
             ca, cb, cc = st.columns([1, 1, 1])
             ca.write(f"📟 Licznik: **{last_mth:.1f} MTH**")
@@ -81,8 +81,8 @@ if menu == "🏠 Pulpit Operacyjny":
                     new_m = st.number_input("Bieżący licznik MTH", value=float(last_mth), step=0.1)
                     add_f = st.number_input("Dolałeś paliwa? (L)", value=0.0, step=1.0)
                     if st.form_submit_button("ZAPISZ"):
-                        burned = (new_m - last_mth) * t['Norma']
-                        new_row = pd.DataFrame([[str(target_date), t['ID'], round(new_m, 1), round(add_f, 1), round(burned, 1)]], columns=df_logs.columns)
+                        burned = round((new_m - last_mth) * t['Norma'], 1)
+                        new_row = pd.DataFrame([[str(target_date), t['ID'], round(new_m, 1), round(add_f, 1), burned]], columns=df_logs.columns)
                         conn.update(worksheet="logs", data=pd.concat([df_logs, new_row], ignore_index=True))
                         st.rerun()
             st.divider()
@@ -90,8 +90,9 @@ if menu == "🏠 Pulpit Operacyjny":
     with col_gauge:
         st.subheader("Główny Bak")
         fig = go.Figure(go.Indicator(
-            mode = "gauge+number", value = round(current_stock, 1),
-            gauge = {'axis': {'range': [0, MAX_STORAGE]}, 'bar': {'color': "#3b82f6" if current_stock > LOW_FUEL_ALERT else "#ef4444"}}
+            mode = "gauge+number", value = current_stock,
+            number = {'valueformat': '.1f'},
+            gauge = {'axis': {'range': [0, MAX_STORAGE], 'tickformat': '.1f'}, 'bar': {'color': "#3b82f6" if current_stock > LOW_FUEL_ALERT else "#ef4444"}}
         ))
         fig.update_layout(height=300, paper_bgcolor='rgba(0,0,0,0)', font_color="white", margin=dict(t=50, b=0))
         st.plotly_chart(fig, use_container_width=True)
@@ -108,24 +109,30 @@ elif menu == "📊 Raporty i Analizy":
     m_logs = df_logs[(pd.to_datetime(df_logs['Data']).dt.year == y) & (pd.to_datetime(df_logs['Data']).dt.month == m_idx)]
     
     if not m_logs.empty:
-        total_m_burned = m_logs['Spalone'].sum()
+        total_m_burned = round(m_logs['Spalone'].sum(), 1)
         st.info(f"Podsumowanie: {m_nazwa} {y} | Zużycie: {total_m_burned:.1f} L | Koszt: {(total_m_burned * avg_price):.2f} zł")
         
         report_list = []
         for _, t in df_fleet.iterrows():
             t_m_logs = m_logs[m_logs['ID'] == t['ID']]
             if not t_m_logs.empty:
-                m_burned = t_m_logs['Spalone'].sum()
-                m_mth = t_m_logs['MTH'].max() - t_m_logs['MTH'].min()
+                m_burned = round(t_m_logs['Spalone'].sum(), 1)
+                m_mth = round(t_m_logs['MTH'].max() - t_m_logs['MTH'].min(), 1)
                 report_list.append({
                     "Ciągnik": t['Nazwa'],
-                    "MTH w miesiącu": round(m_mth, 1),
-                    "Zużyte Litry": round(m_burned, 1),
+                    "Zrobione MTH": m_mth,
+                    "Zużyte Litry": m_burned,
                     "Koszt (zł)": round(m_burned * avg_price, 2)
                 })
         
         df_rep = pd.DataFrame(report_list)
-        st.table(df_rep)
+        # Formatowanie tabeli dla pewności wyświetlania 1 miejsca
+        st.table(df_rep.style.format({
+            "Zrobione MTH": "{:.1f}",
+            "Zużyte Litry": "{:.1f}",
+            "Koszt (zł)": "{:.2f}"
+        }))
+        
         st.plotly_chart(px.bar(df_rep, x='Ciągnik', y='Zużyte Litry', color='Ciągnik', text_auto=".1f"), use_container_width=True)
     else:
         st.info(f"Brak danych dla {m_nazwa} {y}.")
