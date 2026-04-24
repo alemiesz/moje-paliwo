@@ -17,22 +17,27 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # --- FUNKCJA ODCZYTU ---
 def load_data():
     try:
-        f = conn.read(worksheet="fleet", ttl=0)
-        i = conn.read(worksheet="inv", ttl=0)
-        l = conn.read(worksheet="logs", ttl=0)
+        f = conn.read(worksheet="fleet", ttl=0).dropna(how="all")
+        i = conn.read(worksheet="inv", ttl=0).dropna(how="all")
+        l = conn.read(worksheet="logs", ttl=0).dropna(how="all")
         
-        f = f.dropna(how="all")
-        i = i.dropna(how="all")
-        l = l.dropna(how="all")
-        
-        if not i.empty: 
-            i['Data_Faktury'] = pd.to_datetime(i['Data_Faktury']).dt.date
-        if not l.empty: 
-            l['Data'] = pd.to_datetime(l['Data']).dt.date
+        # Konwersja dat z zabezpieczeniem przed brakiem kolumn
+        if not i.empty:
+            if 'Data_Faktury' in i.columns:
+                i['Data_Faktury'] = pd.to_datetime(i['Data_Faktury']).dt.date
+            else:
+                st.error("Błąd: W zakładce 'inv' brakuje nagłówka 'Data_Faktury'")
+                st.write("Obecne nagłówki w 'inv':", list(i.columns))
+                st.stop()
+                
+        if not l.empty:
+            if 'Data' in l.columns:
+                l['Data'] = pd.to_datetime(l['Data']).dt.date
+                
         return f, i, l
     except Exception as e:
-        st.error(f"Błąd danych: {e}. Sprawdź czy nagłówki w Arkuszu Google są poprawne.")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        st.error(f"Problem z dostępem do Arkusza Google: {e}")
+        st.stop()
 
 df_fleet, df_inv, df_logs = load_data()
 
@@ -40,6 +45,7 @@ df_fleet, df_inv, df_logs = load_data()
 total_purchased = df_inv['Litry'].sum() if not df_inv.empty else 0
 total_used = df_logs['Dolano'].sum() if not df_logs.empty else 0
 current_stock = max(0, total_purchased - total_used)
+# Średnia cena liczona z kolumny Kwota i Litry
 avg_price = (df_inv['Kwota'].sum() / total_purchased) if total_purchased > 0 else 0
 
 # --- MENU BOCZNE ---
@@ -71,7 +77,7 @@ if menu == "Pulpit Operacyjny":
                 cb.write(f"⛽ Paliwo: **{fuel_in_t:.1f} L**")
                 cb.progress(min(max(fuel_in_t/t['Bak'], 0.0), 1.0))
                 
-                with cc.expander("➕ Loguj"):
+                with cc.expander("➕ Loguj pracę"):
                     with st.form(f"work_{t['ID']}", clear_on_submit=True):
                         new_m = st.number_input("Stan licznika", value=float(last_mth))
                         add_f = st.number_input("Dolewasz? (L)", value=0.0)
@@ -88,10 +94,9 @@ if menu == "Pulpit Operacyjny":
         fig.update_layout(height=250, paper_bgcolor='rgba(0,0,0,0)', font_color="white", margin=dict(t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-# --- MODUŁ 2: RAPORTY (ULEPSZONY) ---
+# --- MODUŁ 2: RAPORTY ---
 elif menu == "Raporty i Analizy":
     st.title("📊 Rozliczenie Miesięczne")
-    
     cur_y = datetime.now().year
     y = st.selectbox("Wybierz Rok", range(2024, cur_y + 3), index=list(range(2024, cur_y + 3)).index(cur_y))
     m = st.selectbox("Wybierz Miesiąc", list(calendar.month_name)[1:], index=datetime.now().month-1)
@@ -101,17 +106,14 @@ elif menu == "Raporty i Analizy":
     
     if not m_logs.empty:
         total_m_burned = m_logs['Spalone'].sum()
-        st.markdown(f'<div style="background:#1e293b; padding:20px; border-radius:10px; border-left: 5px solid #3b82f6;"><h3>Suma zużycia w {m}: {total_m_burned:.1f} L</h3><p>Szacunkowy koszt: {(total_m_burned * avg_price):.2f} zł</p></div>', unsafe_allow_html=True)
+        st.info(f"Suma zużycia w {m}: {total_m_burned:.1f} L | Szacunkowy koszt: {(total_m_burned * avg_price):.2f} zł")
         
-        st.divider()
-        st.subheader("Tabela Zbiorcza Ciągników")
-        
-        # Obliczanie tabeli raportu
         report_list = []
         for _, t in df_fleet.iterrows():
             t_m_logs = m_logs[m_logs['ID'] == t['ID']]
             if not t_m_logs.empty:
                 m_burned = t_m_logs['Spalone'].sum()
+                # Obliczanie MTH zrobionych w tym miesiącu
                 m_mth = t_m_logs['MTH'].max() - t_m_logs['MTH'].min()
                 report_list.append({
                     "Ciągnik": t['Nazwa'],
@@ -120,20 +122,19 @@ elif menu == "Raporty i Analizy":
                     "Koszt (zł)": round(m_burned * avg_price, 2)
                 })
         
-        st.table(pd.DataFrame(report_list))
-        
-        st.subheader("Wykres Spalania")
-        st.plotly_chart(px.bar(pd.DataFrame(report_list), x='Ciągnik', y='Zużyte Litry', color='Ciągnik', text_auto=True), use_container_width=True)
+        if report_list:
+            st.table(pd.DataFrame(report_list))
+            st.plotly_chart(px.bar(pd.DataFrame(report_list), x='Ciągnik', y='Zużyte Litry', color='Ciągnik'), use_container_width=True)
     else:
-        st.info("Brak danych dla wybranego miesiąca.")
+        st.info("Brak wpisów w wybranym miesiącu.")
 
-# --- MODUŁ 3: GARAŻ I FAKTURY (ULEPSZONY) ---
+# --- MODUŁ 3: GARAŻ I FAKTURY ---
 elif menu == "Garaż i Faktury":
     st.title("⚙️ Logistyka i Flota")
     tab_f, tab_t = st.tabs(["📄 Faktury (Zakupy)", "🚜 Zarządzanie Flotą"])
     
     with tab_f:
-        with st.form("new_inv"):
+        with st.form("new_inv", clear_on_submit=True):
             st.subheader("Dodaj nową fakturę")
             c1, c2 = st.columns(2)
             inv_num = c1.text_input("Numer Faktury")
@@ -142,7 +143,6 @@ elif menu == "Garaż i Faktury":
             inv_price = c2.number_input("Kwota Brutto (zł)", min_value=0.0)
             
             if st.form_submit_button("ZAPISZ FAKTURĘ"):
-                # Data_Wpisu, Data_Faktury, Numer_Faktury, Litry, Kwota
                 new_row_inv = pd.DataFrame([[str(date.today()), str(inv_date), inv_num, inv_qty, inv_price]], columns=df_inv.columns)
                 conn.update(worksheet="inv", data=pd.concat([df_inv, new_row_inv], ignore_index=True))
                 st.success("Faktura dodana!")
@@ -154,17 +154,5 @@ elif menu == "Garaż i Faktury":
             st.dataframe(df_inv.sort_values('Data_Faktury', ascending=False), use_container_width=True)
 
     with tab_t:
-        with st.expander("➕ Dodaj nowy ciągnik"):
-            with st.form("add_t"):
-                n = st.text_input("Nazwa")
-                no = st.number_input("Norma L/MTH", value=5.0)
-                ba = st.number_input("Pojemność baku (L)", value=100.0)
-                ms = st.number_input("MTH Startowe", value=0.0)
-                sc = st.number_input("Serwis co (MTH)", value=250.0)
-                if st.form_submit_button("DODAJ"):
-                    new_id = df_fleet['ID'].max() + 1 if not df_fleet.empty else 1
-                    new_row_t = pd.DataFrame([[new_id, n, no, ba, ms, sc]], columns=df_fleet.columns)
-                    conn.update(worksheet="fleet", data=pd.concat([df_fleet, new_row_t], ignore_index=True))
-                    st.rerun()
-        st.write("Twoja flota:")
+        st.subheader("Twoja flota")
         st.table(df_fleet)
